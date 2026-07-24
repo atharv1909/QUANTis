@@ -1,0 +1,40 @@
+# QUANTIS 2.0 — Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Data files (too large for git)
+data/
+*.parquet
+*.csv
+
+# Checkpoints and results (generated during training)
+checkpoints/
+results/
+plots/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual environments
+venv/
+.env/
