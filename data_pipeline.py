@@ -363,8 +363,19 @@ class Nifty50Pipeline:
             df = df.merge(vix_data[["date", "vix_level", "vix_pctile"]],
                          on="date", how="left")
 
+        # ---- Daily Cross-Sectional Z-Score Standardization ----
+        # Normalizes each feature across all stocks on each date t (CS Z-score)
+        # Prevents long-term macroeconomic scale drift and enforces stationarity
+        print("⚡ Applying daily cross-sectional Z-score standardization...")
+        for col in FEATURE_COLS:
+            if col in df.columns:
+                mean_t = df.groupby("date")[col].transform("mean")
+                std_t = df.groupby("date")[col].transform("std").replace(0, 1.0)
+                df[col] = (df[col] - mean_t) / (std_t + 1e-8)
+                df[col] = df[col].clip(-3.0, 3.0)  # clip extreme outliers
+
         self.features = df
-        print(f"✅ Features computed: {len(FEATURE_COLS)} features, "
+        print(f"✅ Features computed & CS-standardized: {len(FEATURE_COLS)} features, "
               f"{len(df):,} rows")
         return df
 
