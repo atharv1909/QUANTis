@@ -86,21 +86,30 @@ def run_training(data, market_df, seed=0, device="auto"):
     return predictions
 
 
-def run_evaluation(predictions_path=None):
+def run_evaluation(predictions_input=None):
     """Step 3: Evaluate and display results."""
     print("\n" + "="*60)
     print("  STEP 3: EVALUATION")
     print("="*60)
 
     # Load predictions
-    if predictions_path and os.path.exists(predictions_path):
-        preds = pd.read_parquet(predictions_path)
+    if isinstance(predictions_input, pd.DataFrame):
+        preds = predictions_input.copy()
+    elif isinstance(predictions_input, str) and os.path.exists(predictions_input):
+        preds = pd.read_parquet(predictions_input)
     else:
-        # Try to find predictions in results dir
+        # Try to find non-partial predictions in results dir
         pred_files = sorted([
             f for f in os.listdir(RESULTS_DIR)
             if f.startswith("all_preds") and f.endswith(".parquet")
+            and "partial" not in f
         ])
+        if not pred_files:
+            # Fallback to any parquet in results
+            pred_files = sorted([
+                f for f in os.listdir(RESULTS_DIR)
+                if f.endswith(".parquet") and "partial" not in f
+            ])
         if not pred_files:
             print("❌ No prediction files found. Run training first.")
             return
@@ -274,7 +283,7 @@ if __name__ == "__main__":
         predictions = run_training(data, market_df, seed=args.seed,
                                     device=args.device)
         if len(predictions) > 0:
-            run_evaluation()
+            run_evaluation(predictions)
 
     elif args.mode == "eval":
         run_evaluation(args.predictions)
