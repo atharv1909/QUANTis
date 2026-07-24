@@ -70,7 +70,7 @@ def run_training(data, market_df, seed=0, device="auto"):
     print(f"  Device: {device}")
     if device == "cuda":
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
-        mem = torch.cuda.get_device_properties(0).total_mem / 1e9
+        mem = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"  VRAM: {mem:.1f} GB")
 
     config = TrainingConfig(device=device)
