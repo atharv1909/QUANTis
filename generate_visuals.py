@@ -49,13 +49,35 @@ def generate_visuals():
     # 1. Load Data
     # ---------------------------------------------------------
     print("Loading prediction parquets...")
-    pred_files = glob.glob("results/preds_fold_*_seed0.parquet")
+    # Check absolute kaggle path first, then relative path
+    search_paths = [
+        "/kaggle/working/results/preds_fold_*_seed*.parquet",
+        "results/preds_fold_*_seed*.parquet"
+    ]
+    
+    pred_files = []
+    for path in search_paths:
+        pred_files.extend(glob.glob(path))
+        
     if not pred_files:
-        print("❌ No prediction files found in results/ directory!")
+        print("❌ No prediction files found in results/ directories!")
         return
         
     dfs = [pd.read_parquet(f) for f in pred_files]
-    preds = pd.concat(dfs).sort_values("date")
+    preds = pd.concat(dfs)
+    
+    # Average across all seeds for each (date, ticker) pair to get the ensemble prediction
+    print("Asembling ensemble predictions across all seeds...")
+    agg_funcs = {'y_pred': 'mean', 'y_true': 'mean'}
+    if 'regime' in preds.columns:
+        agg_funcs['regime'] = lambda x: x.mode()[0]
+    
+    gate_cols = [c for c in preds.columns if c.startswith('gate_')]
+    for g in gate_cols:
+        agg_funcs[g] = 'mean'
+        
+    preds = preds.groupby(['date', 'ticker']).agg(agg_funcs).reset_index()
+    preds = preds.sort_values("date")
     # Convert dates strictly to datetime
     preds["date"] = pd.to_datetime(preds["date"])
     
