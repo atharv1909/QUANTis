@@ -69,8 +69,11 @@ def run_training(data, market_df, seed=0, device="auto"):
         device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"  Device: {device}")
     if device == "cuda":
-        props = torch.cuda.get_device_properties(0)
-        total_bytes = getattr(props, "total_memory", getattr(props, "total_mem", 0))
+        print(f"  GPU: {torch.cuda.get_device_name(0)}")
+        try:
+            total_bytes = torch.cuda.get_device_properties(0).total_memory
+        except AttributeError:
+            total_bytes = 15e9
         mem = total_bytes / 1e9
         print(f"  VRAM: {mem:.1f} GB")
 
