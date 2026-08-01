@@ -642,9 +642,9 @@ class Nifty50Pipeline:
               "BEL.NS (added 2024) appear in pre-2023 training data. "
               "This is an acknowledged limitation.")
 
-        if cache:
-            self.features.to_parquet(cache_path, index=False)
-            print(f"💾 Saved processed data to {cache_path}")
+        # Always save processed dataset to cache_path
+        self.features.to_parquet(cache_path, index=False)
+        print(f"💾 Saved processed data to {cache_path}")
 
         # Bug 5 fix: Content hash verification
         import hashlib
