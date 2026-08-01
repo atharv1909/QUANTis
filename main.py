@@ -251,8 +251,9 @@ def run_quick_test():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="QUANTIS 2.0")
     parser.add_argument("--mode", type=str, default="test",
-                        choices=["test", "full", "eval"],
+                        choices=["test", "full", "multi_seed", "eval"],
                         help="test=quick 5-stock test, full=all stocks, "
+                             "multi_seed=run all 5 seeds, "
                              "eval=evaluate existing predictions")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed (0-4 for 5-seed experiments)")
@@ -282,6 +283,25 @@ if __name__ == "__main__":
                                     device=args.device)
         if len(predictions) > 0:
             run_evaluation(predictions)
+
+    elif args.mode == "multi_seed":
+        import pandas as pd
+        from evaluation import multi_seed_evaluation, print_multi_seed_table
+        
+        print("\n" + "="*60)
+        print("  QUANTIS 2.0 — FINAL 5-SEED RUN")
+        print("="*60)
+        data, market_df = run_data_pipeline(cache=True)
+        
+        all_predictions = []
+        for s in [0, 42, 123, 456, 789]:
+            print(f"\n🚀 RUNNING SEED {s}...")
+            preds = run_training(data, market_df, seed=s, device=args.device)
+            all_predictions.append(preds)
+            
+        combined_preds = pd.concat(all_predictions)
+        multi_results = multi_seed_evaluation(combined_preds)
+        print_multi_seed_table(multi_results)
 
     elif args.mode == "eval":
         run_evaluation(args.predictions)
