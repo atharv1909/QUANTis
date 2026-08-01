@@ -125,6 +125,10 @@ def main():
         print("No successful validations.")
         return
         
+    # Save results for visualization
+    os.makedirs("results", exist_ok=True)
+    res_df.to_csv("results/bhavcopy_validation.csv", index=False)
+    
     match_rate = res_df["Match"].mean() * 100
     
     print("\n" + "="*60)
@@ -139,6 +143,7 @@ def main():
     print("control for YFinance's native retroactive adjustments for splits and")
     print("spinoffs (like Jio Financial Services). This mathematically proves")
     print("the underlying OHLCV series integrity.")
+    print("💾 Saved validation results to results/bhavcopy_validation.csv")
 
 if __name__ == "__main__":
     main()
