@@ -70,12 +70,6 @@ def run_training(data, market_df, seed=0, device="auto"):
     print(f"  Device: {device}")
     if device == "cuda":
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
-        try:
-            total_bytes = torch.cuda.get_device_properties(0).total_memory
-        except AttributeError:
-            total_bytes = 15e9
-        mem = total_bytes / 1e9
-        print(f"  VRAM: {mem:.1f} GB")
 
     config = TrainingConfig(device=device)
     trainer = WalkForwardTrainer(config)
