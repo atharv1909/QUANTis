@@ -177,24 +177,14 @@ class LightGBMExpert:
     Retrained per walk-forward fold.
     """
     
-    def __init__(self, params: dict = None):
+    def __init__(self, params: dict):
+        """Initialize with params from LGBMConfig.to_lgbm_params(seed).
+        
+        WARNING: No default params — caller MUST pass the config dict
+        to ensure hyperparameters trace to config.py's LGBMConfig.
+        """
         self.model = None
-        self.params = params or {
-            "objective": "regression",
-            "metric": "mse",
-            "n_estimators": 1000,
-            "num_leaves": 15,
-            "max_depth": 4,
-            "learning_rate": 0.01,
-            "feature_fraction": 0.6,
-            "bagging_fraction": 0.6,
-            "bagging_freq": 5,
-            "lambda_l1": 1.0,
-            "lambda_l2": 5.0,
-            "min_child_samples": 100,
-            "verbose": -1,
-            "n_jobs": -1,
-        }
+        self.params = params
     
     def fit(self, X_train: np.ndarray, y_train: np.ndarray,
             X_val: np.ndarray, y_val: np.ndarray):

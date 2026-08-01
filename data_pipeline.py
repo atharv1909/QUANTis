@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 
 from config import (
     NIFTY50_TICKERS, SECTOR_MAP, FEATURE_COLS, D_FEATURES,
-    SEQ_LEN, LABEL_HORIZON, DATA_DIR
+    SEQ_LEN, LABEL_HORIZON, DATA_DIR, TICKER_ISSUES
 )
 
 
@@ -95,6 +95,11 @@ class Nifty50Pipeline:
 
         if failed:
             print(f"⚠️  Failed tickers ({len(failed)}): {failed}")
+            for f_ticker in failed:
+                if f_ticker in TICKER_ISSUES:
+                    print(f"  ℹ️  {f_ticker}: {TICKER_ISSUES[f_ticker]}")
+                else:
+                    print(f"  ❌ {f_ticker}: Unknown download failure")
 
         self.ohlcv = pd.concat(frames, ignore_index=True)
         self.ohlcv["date"] = pd.to_datetime(self.ohlcv["date"])
@@ -631,9 +636,25 @@ class Nifty50Pipeline:
         print(f"🧹 Dropped {before - after:,} rows with NaN features "
               f"(warmup period)")
 
+        # Bug 7 fix: Survivorship bias explicit warning
+        print("⚠️  SURVIVORSHIP BIAS WARNING: Using present-day NIFTY 50 "
+              "constituents applied retroactively. TRENT.NS (added 2023) and "
+              "BEL.NS (added 2024) appear in pre-2023 training data. "
+              "This is an acknowledged limitation.")
+
         if cache:
             self.features.to_parquet(cache_path, index=False)
             print(f"💾 Saved processed data to {cache_path}")
+
+        # Bug 5 fix: Content hash verification
+        import hashlib
+        h = hashlib.sha256()
+        with open(cache_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        data_hash = h.hexdigest()[:16]
+        print(f"🔒 Data hash: {data_hash}")
+        print(f"⚠️  Re-use this EXACT parquet file across all 5 seed runs.")
 
         return self.features
 
@@ -677,8 +698,12 @@ class MarketFeatureBuilder:
             daily["vix_level"] = daily["market_vol"] * 100  # proxy
 
         daily = daily.dropna()
+        if "vix_pctile" not in daily.columns:
+            # Bug 10 fix: vix_pctile rank
+            daily["vix_pctile"] = daily["vix_level"].rank(pct=True)
+            
         return daily[["date", "market_ret", "market_vol", "vix_level",
-                       "breadth", "avg_vol_ratio"]]
+                       "breadth", "avg_vol_ratio", "vix_pctile"]]
 
 
 # ================================================================

@@ -21,10 +21,12 @@ import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
+import random
+
 from config import (
     FEATURE_COLS, D_FEATURES, SEQ_LEN, LABEL_HORIZON,
     EMBARGO_DAYS, WALK_FORWARD_FOLDS, SECTOR_MAP,
-    CHECKPOINT_DIR, RESULTS_DIR, TrainingConfig
+    CHECKPOINT_DIR, RESULTS_DIR, TrainingConfig, LGBMConfig
 )
 from models import (
     QUANTIS, LightGBMExpert, RegimeDetector, ConformalGate
@@ -56,7 +58,7 @@ class WalkForwardTrainer:
     def prepare_fold_data(self, full_df: pd.DataFrame,
                           fold: Dict) -> Tuple[pd.DataFrame, pd.DataFrame,
                                                 pd.DataFrame]:
-        """Split data for one fold with embargo."""
+        """Split data for one fold with embargo verification."""
         train = full_df[
             (full_df["date"] >= fold["train_start"]) &
             (full_df["date"] <= fold["train_end"])
@@ -72,12 +74,40 @@ class WalkForwardTrainer:
             (full_df["date"] <= fold["test_end"])
         ].copy()
         
+        # Bug 6 fix: verify embargo gap in TRADING days
+        all_dates = sorted(full_df["date"].unique())
+        train_end = pd.Timestamp(fold["train_end"])
+        val_start = pd.Timestamp(fold["val_start"])
+        val_end = pd.Timestamp(fold["val_end"])
+        test_start = pd.Timestamp(fold["test_start"])
+        
+        gap_tv = len([d for d in all_dates if train_end < d < val_start])
+        gap_vt = len([d for d in all_dates if val_end < d < test_start])
+        print(f"  \U0001f4cf Embargo: train\u2192val={gap_tv} trading days, "
+              f"val\u2192test={gap_vt} trading days (target={EMBARGO_DAYS})")
+        if gap_tv < EMBARGO_DAYS:
+            print(f"  \u26a0\ufe0f  WARNING: train\u2192val gap ({gap_tv}) < "
+                  f"EMBARGO_DAYS ({EMBARGO_DAYS})")
+        if gap_vt < EMBARGO_DAYS:
+            print(f"  \u26a0\ufe0f  WARNING: val\u2192test gap ({gap_vt}) < "
+                  f"EMBARGO_DAYS ({EMBARGO_DAYS})")
+        
         return train, val, test
     
     def train_lgbm(self, train_df: pd.DataFrame,
-                   val_df: pd.DataFrame) -> LightGBMExpert:
-        """Train LightGBM expert on CPU (zero GPU cost)."""
-        lgbm = LightGBMExpert()
+                   val_df: pd.DataFrame,
+                   seed: int = 42) -> LightGBMExpert:
+        """Train LightGBM expert on CPU (zero GPU cost).
+        
+        Bug 3 fix: params come from LGBMConfig.to_lgbm_params(seed).
+        Bug 4 fix: seed propagated for full determinism.
+        """
+        lgbm_config = LGBMConfig()
+        params = lgbm_config.to_lgbm_params(seed=seed)
+        print(f"  \U0001f4cb LightGBM params: leaves={params['num_leaves']}, "
+              f"depth={params['max_depth']}, lr={params['learning_rate']}, "
+              f"seed={params['seed']}, deterministic={params['deterministic']}")
+        lgbm = LightGBMExpert(params=params)
         
         # Flatten: each row = one (stock, date) observation
         feature_cols = [c for c in FEATURE_COLS if c in train_df.columns]
@@ -115,13 +145,14 @@ class WalkForwardTrainer:
         snapshot = torch.nan_to_num(snapshot, 0.0)
         
         # Market features for embedding
+        # Bug 10 fix: replaced 0.0 placeholder with vix_pctile
         market_feats = np.array([
             market_row.get("market_ret", 0),
             market_row.get("market_vol", 0),
             market_row.get("vix_level", 0),
             market_row.get("breadth", 0.5),
             market_row.get("avg_vol_ratio", 1.0),
-            0.0,  # placeholder for additional feature
+            market_row.get("vix_pctile", 0.5),
         ], dtype=np.float32)
         market_snap = torch.tensor(market_feats, dtype=torch.float32,
                                     device=device)
@@ -171,11 +202,15 @@ class WalkForwardTrainer:
         print(f"  Test:  {fold['test_start']} → {fold['test_end']}")
         print(f"{'='*60}")
         
-        # Set seed
+        # Bug 4 fix: full determinism — all RNGs seeded, cudnn deterministic
+        random.seed(seed)
         torch.manual_seed(seed)
         np.random.seed(seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        print(f"  \U0001f512 Determinism: torch/np/random/lgbm all seeded to {seed}")
         
         # Split data
         train_df, val_df, test_df = self.prepare_fold_data(full_df, fold)
@@ -214,7 +249,7 @@ class WalkForwardTrainer:
         # ---- Step 2: Train LightGBM (CPU) ----
         print("  🌳 Training LightGBM...")
         t0 = time.time()
-        lgbm = self.train_lgbm(train_norm, val_norm)
+        lgbm = self.train_lgbm(train_norm, val_norm, seed=seed)
         print(f"  ✅ LightGBM trained in {time.time()-t0:.1f}s")
         
         # ---- Step 3: Build graph ----
@@ -271,6 +306,7 @@ class WalkForwardTrainer:
         for epoch in range(self.config.n_epochs):
             model.train()
             epoch_losses = []
+            epoch_entropy_ratios = []
             
             for date in train_dates:
                 batch_data = train_batches[date]
@@ -303,15 +339,16 @@ class WalkForwardTrainer:
                     final_preds.squeeze()[valid_mask],
                     labels[valid_mask])
                 
-                # --- Gate diversity regularization (prevents expert collapse) ---
-                # Entropy: maximize spread of gate weights across experts
+                # --- Bug 1 fix: Gate diversity regularization SCALED to task loss ---
+                # Scale weights relative to mse_loss so regularizer stays <20% of task loss
                 gate_entropy = -(gate_weights * torch.log(gate_weights + 1e-8)).sum(dim=-1).mean()
-                # Load balancing: penalize if any expert dominates
                 avg_weights = gate_weights.mean(dim=0)  # [3]
                 balance_loss = (avg_weights.max() - 1.0 / gate_weights.shape[-1]) ** 2
                 
-                loss = mse_loss - self.config.gate_entropy_weight * gate_entropy \
-                     + self.config.gate_balance_weight * balance_loss
+                mse_scale = mse_loss.detach().clamp(min=1e-6)
+                entropy_term = self.config.gate_entropy_weight * mse_scale * gate_entropy
+                balance_term = self.config.gate_balance_weight * mse_scale * balance_loss
+                loss = mse_loss - entropy_term + balance_term
                 
                 if torch.isnan(loss):
                     continue
@@ -321,6 +358,8 @@ class WalkForwardTrainer:
                                           self.config.grad_clip)
                 optimizer.step()
                 epoch_losses.append(mse_loss.item())  # log pure MSE, not regularized
+                epoch_entropy_ratios.append(
+                    abs(entropy_term.item()) / (mse_loss.item() + 1e-10))
             
             # ---- Validate ----
             model.eval()
@@ -363,11 +402,13 @@ class WalkForwardTrainer:
                 val_ic = -1
             
             avg_loss = np.mean(epoch_losses) if epoch_losses else float("nan")
+            avg_ent_ratio = np.mean(epoch_entropy_ratios) if epoch_entropy_ratios else 0.0
             scheduler.step(val_ic if not np.isnan(val_ic) else -1)
             
             if (epoch + 1) % 5 == 0 or epoch == 0:
                 print(f"    Epoch {epoch+1:3d}/{self.config.n_epochs} | "
-                      f"Loss: {avg_loss:.6f} | Val IC: {val_ic:.4f}")
+                      f"Loss: {avg_loss:.6f} | Val IC: {val_ic:.4f} | "
+                      f"|ent|/|mse|: {avg_ent_ratio:.3f}")
             
             if not np.isnan(val_ic) and val_ic > best_val_ic:
                 best_val_ic = val_ic
@@ -494,14 +535,16 @@ class WalkForwardTrainer:
     
     def run_all_folds(self, full_df: pd.DataFrame,
                       market_df: pd.DataFrame,
-                      seed: int = 42) -> pd.DataFrame:
+                      seed: int = 42,
+                      folds: List[Dict] = None) -> pd.DataFrame:
         """Run all walk-forward folds.
         
         Returns concatenated predictions DataFrame.
         """
         all_preds = []
+        target_folds = folds or WALK_FORWARD_FOLDS
         
-        for fold_idx, fold in enumerate(WALK_FORWARD_FOLDS):
+        for fold_idx, fold in enumerate(target_folds):
             result = self.train_one_fold(
                 fold_idx, fold, full_df, market_df, seed)
             

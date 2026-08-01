@@ -1,6 +1,9 @@
 """
 QUANTIS 2.0 — Configuration
 All hyperparameters, feature lists, tickers, and paths in one place.
+
+RULE: Every hyperparameter used at runtime traces to exactly ONE definition
+in this file. Zero inline hardcoded hyperparameter dicts anywhere else.
 """
 import os
 from dataclasses import dataclass, field
@@ -102,6 +105,11 @@ class TKANConfig:
 
 @dataclass
 class LGBMConfig:
+    """Single source of truth for LightGBM hyperparameters.
+    
+    WARNING: Do NOT create separate param dicts in models.py or training.py.
+    Use to_lgbm_params(seed) to get the exact dict LightGBM needs.
+    """
     n_estimators: int = 1000
     num_leaves: int = 31
     max_depth: int = 6
@@ -112,6 +120,29 @@ class LGBMConfig:
     lambda_l1: float = 0.5
     lambda_l2: float = 2.0
     min_child_samples: int = 50
+
+    def to_lgbm_params(self, seed: int = 42) -> dict:
+        """Return the complete LightGBM parameter dict with determinism flags."""
+        return {
+            "objective": "regression",
+            "metric": "mse",
+            "n_estimators": self.n_estimators,
+            "num_leaves": self.num_leaves,
+            "max_depth": self.max_depth,
+            "learning_rate": self.learning_rate,
+            "feature_fraction": self.feature_fraction,
+            "bagging_fraction": self.bagging_fraction,
+            "bagging_freq": self.bagging_freq,
+            "lambda_l1": self.lambda_l1,
+            "lambda_l2": self.lambda_l2,
+            "min_child_samples": self.min_child_samples,
+            "verbose": -1,
+            "seed": seed,
+            "bagging_seed": seed,
+            "feature_fraction_seed": seed,
+            "deterministic": True,
+            "force_row_wise": True,
+        }
 
 @dataclass
 class GNNConfig:
@@ -206,3 +237,28 @@ NSE_BROKERAGE_BPS = 3        # 0.03% brokerage
 NSE_STT_BPS = 10             # 0.1% Securities Transaction Tax
 NSE_IMPACT_BPS = 10          # ~10 bps market impact estimate
 TOTAL_COST_BPS = NSE_BROKERAGE_BPS + NSE_STT_BPS + NSE_IMPACT_BPS  # 23 bps one-way
+
+# ============================================================
+# STABLE-CORE TICKERS (confirmed continuous NIFTY 50 since ~2010)
+# For survivorship-bias robustness check (see Bug 7 / §6 protocol)
+# ============================================================
+STABLE_CORE_TICKERS = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+    "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "ASIANPAINT.NS", "MARUTI.NS",
+    "TITAN.NS", "SUNPHARMA.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "WIPRO.NS",
+    "HCLTECH.NS", "NTPC.NS", "POWERGRID.NS", "JSWSTEEL.NS", "TECHM.NS",
+    "INDUSINDBK.NS", "ONGC.NS", "COALINDIA.NS", "BAJAJFINSV.NS",
+    "TATASTEEL.NS", "GRASIM.NS", "DIVISLAB.NS", "CIPLA.NS", "DRREDDY.NS",
+    "BRITANNIA.NS", "EICHERMOT.NS", "BPCL.NS", "HINDALCO.NS",
+    "HEROMOTOCO.NS", "M&M.NS",
+]  # ~40 tickers — excludes TRENT, BEL, APOLLOHOSP, TRENT, ADANI*, TATACONSUM
+
+# Known ticker issues (for explicit handling of download failures)
+TICKER_ISSUES = {
+    "TATAMOTORS.NS": (
+        "Tata Motors demerged in Oct 2024 (commercial vehicles spun off as "
+        "TATAMTRDVR.NS). Pre-demerger data not available via yfinance post-2024. "
+        "Dropped from universe — acknowledged data limitation."
+    ),
+}

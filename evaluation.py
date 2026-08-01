@@ -1,7 +1,7 @@
 """
 QUANTIS 2.0 — Evaluation Metrics
 IC, ICIR, RankIC, Sharpe, Sortino, Calmar, MDD, Precision@N, NDCG,
-statistical tests (DM-test, DSR, PBO), and price prediction output.
+statistical tests (DM-test, DSR, PBO, Benjamini-Hochberg FDR), and price prediction output.
 
 NO hardcoded values. Everything computed from actual predictions.
 """
@@ -220,6 +220,9 @@ def deflated_sharpe_ratio(sharpe: float, n_trials: int,
                            kurtosis: float = 3) -> float:
     """Deflated Sharpe Ratio (Bailey & López de Prado).
     
+    CRITICAL: Expects DAILY (non-annualized) Sharpe ratio to match n_obs frequency!
+    If you have an annualized Sharpe, divide by sqrt(252) before calling.
+    
     Adjusts for multiple testing. Returns probability that the Sharpe
     is not a statistical fluke given the number of trials.
     """
@@ -229,7 +232,87 @@ def deflated_sharpe_ratio(sharpe: float, n_trials: int,
                   (kurtosis - 1) / 4 * sharpe**2) / n_obs)
     
     dsr = stats.norm.cdf((sharpe - max_expected) / (se + 1e-10))
-    return dsr
+    return float(dsr)
+
+
+def probability_of_backtest_overfitting(matrix_returns: np.ndarray,
+                                         n_partitions: int = 16) -> float:
+    """Probability of Backtest Overfitting (PBO) via CSCV (Bailey et al. 2014).
+    
+    Combinatorial Cross-Validation to estimate likelihood that chosen strategy
+    is overfit across N configurations tested during development.
+    
+    Args:
+        matrix_returns: [T, N] daily returns matrix for N strategy configurations
+        n_partitions: Number of time slices (must be even, default 16)
+    Returns:
+        pbo: float in [0, 1] — fraction of OOS slices where IS-best underperforms median
+    """
+    if matrix_returns is None or matrix_returns.ndim != 2:
+        return np.nan
+    T, N = matrix_returns.shape
+    if N < 2 or T < n_partitions:
+        return np.nan
+    
+    partition_size = T // n_partitions
+    sub_matrices = [matrix_returns[i * partition_size : (i + 1) * partition_size]
+                    for i in range(n_partitions)]
+    
+    from itertools import combinations
+    half = n_partitions // 2
+    combos = list(combinations(range(n_partitions), half))
+    
+    if len(combos) > 200:
+        np.random.seed(42)
+        indices = np.random.choice(len(combos), 200, replace=False)
+        combos = [combos[i] for i in indices]
+        
+    underperformed = []
+    for is_indices in combos:
+        oos_indices = [i for i in range(n_partitions) if i not in is_indices]
+        
+        is_data = np.concatenate([sub_matrices[i] for i in is_indices], axis=0)
+        oos_data = np.concatenate([sub_matrices[i] for i in oos_indices], axis=0)
+        
+        is_sharpes = np.mean(is_data, axis=0) / (np.std(is_data, axis=0) + 1e-10)
+        best_is_idx = np.argmax(is_sharpes)
+        
+        oos_sharpes = np.mean(oos_data, axis=0) / (np.std(oos_data, axis=0) + 1e-10)
+        best_oos_sharpe = oos_sharpes[best_is_idx]
+        median_oos_sharpe = np.median(oos_sharpes)
+        
+        underperformed.append(best_oos_sharpe < median_oos_sharpe)
+        
+    return float(np.mean(underperformed))
+
+
+def benjamini_hochberg(p_values: np.ndarray,
+                       alpha: float = 0.05) -> Tuple[np.ndarray, np.ndarray]:
+    """Benjamini-Hochberg False Discovery Rate (FDR) correction.
+    
+    Args:
+        p_values: array of raw p-values across multiple tests (e.g. per-stock IC)
+        alpha: target FDR threshold (default 0.05)
+    Returns:
+        (adjusted_p_values, significant_mask)
+    """
+    p_vals = np.array(p_values)
+    n = len(p_vals)
+    if n == 0:
+        return np.array([]), np.array([], dtype=bool)
+    
+    sorted_idx = np.argsort(p_vals)
+    sorted_p = p_vals[sorted_idx]
+    
+    adj_p = np.zeros(n)
+    cum_min = 1.0
+    for i in range(n - 1, -1, -1):
+        q = sorted_p[i] * n / (i + 1)
+        cum_min = min(cum_min, q)
+        adj_p[sorted_idx[i]] = cum_min
+        
+    significant = adj_p <= alpha
+    return np.clip(adj_p, 0.0, 1.0), significant
 
 
 # ================================================================
@@ -390,9 +473,10 @@ def full_evaluation(predictions_df: pd.DataFrame,
         results["DM_stat"] = dm_stat
         results["DM_pvalue"] = dm_p
     
-    # DSR
+    # DSR (Bug 2 fix: divide annualized Sharpe by sqrt(252) for daily frequency)
+    daily_sharpe = results["Sharpe"] / np.sqrt(252) if not np.isnan(results["Sharpe"]) else 0.0
     results["DSR"] = deflated_sharpe_ratio(
-        results["Sharpe"], n_trials, len(ls_arr))
+        daily_sharpe, n_trials, len(ls_arr))
     
     # ---- Price prediction accuracy ----
     prices = predictions_to_prices(predictions_df)
