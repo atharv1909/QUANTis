@@ -226,10 +226,11 @@ def deflated_sharpe_ratio(sharpe: float, n_trials: int,
     Adjusts for multiple testing. Returns probability that the Sharpe
     is not a statistical fluke given the number of trials.
     """
-    max_expected = np.sqrt(2 * np.log(n_trials))  # E[max(Z_1,...,Z_M)]
-    
     se = np.sqrt((1 - skew * sharpe +
                   (kurtosis - 1) / 4 * sharpe**2) / n_obs)
+                  
+    # Scale standard normal expected maximum by the standard error of the Sharpe ratio
+    max_expected = se * np.sqrt(2 * np.log(n_trials))
     
     dsr = stats.norm.cdf((sharpe - max_expected) / (se + 1e-10))
     return float(dsr)
